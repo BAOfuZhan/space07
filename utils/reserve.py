@@ -16,6 +16,11 @@ except ImportError:
     pass  # dotenv not installed, use system environment variables instead
 
 
+    def _should_save_captcha_debug_images() -> bool:
+        """是否保存验证码图片到本地，默认关闭。"""
+        return os.getenv("SAVE_CAPTCHA_DEBUG_IMAGES", "0").lower() in {"1", "true", "yes", "on"}
+
+
 def _get_tulingcloud_config():
     """从环境变量或 config.json 获取图灵云配置。
     
@@ -239,6 +244,9 @@ class reserve:
         logging.info(f"Successfully get prepared captcha_token {captcha_token}")
         logging.info(f"Captcha Image URL-small {tp}, URL-big {bg}")
         x = self.x_distance(bg, tp)
+        if x is None:
+            logging.warning("Failed to download or parse slide captcha images")
+            return ""
         logging.info(f"Successfully calculate the captcha distance {x}")
 
         return self._submit_captcha("slide", captcha_token, [{"x": x}])
@@ -368,17 +376,18 @@ class reserve:
             logging.error(f"Failed to download captcha image: {e}")
             return None
         
-        # 保存到本地调试
-        try:
-            ts = int(_time.time() * 1000)
-            debug_dir = os.path.join(os.path.dirname(__file__), "..", "captcha_debug")
-            os.makedirs(debug_dir, exist_ok=True)
-            img_path = os.path.join(debug_dir, f"textclick_{ts}.jpg")
-            with open(img_path, "wb") as f:
-                f.write(img_bytes)
-            logging.debug(f"Saved textclick captcha image to {img_path}")
-        except Exception as e:
-            logging.debug(f"Failed to save captcha image: {e}")
+        # 可选调试：默认不落盘，避免影响关键路径时延
+        if _should_save_captcha_debug_images():
+            try:
+                ts = int(_time.time() * 1000)
+                debug_dir = os.path.join(os.path.dirname(__file__), "..", "captcha_debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                img_path = os.path.join(debug_dir, f"textclick_{ts}.jpg")
+                with open(img_path, "wb") as f:
+                    f.write(img_bytes)
+                logging.debug(f"Saved textclick captcha image to {img_path}")
+            except Exception as e:
+                logging.debug(f"Failed to save captcha image: {e}")
         
         # 使用图灵云打码平台进行OCR识别
         try:
@@ -538,24 +547,52 @@ class reserve:
             "Upgrade-Insecure-Requests": "1",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         }
-        bgc = self.requests.get(bg, headers=c_captcha_headers)
-        tpc = self.requests.get(tp, headers=c_captcha_headers)
-        bg_bytes, tp_bytes = bgc.content, tpc.content
 
-        # 调试：把当前验证码图片保存到本地，方便人工查看和调试
-        try:
-            ts = int(_time.time() * 1000)
-            debug_dir = os.path.join(os.path.dirname(__file__), "..", "captcha_debug")
-            os.makedirs(debug_dir, exist_ok=True)
-            bg_path = os.path.join(debug_dir, f"bg_{ts}.jpg")
-            tp_path = os.path.join(debug_dir, f"tp_{ts}.png")
-            with open(bg_path, "wb") as f:
-                f.write(bg_bytes)
-            with open(tp_path, "wb") as f:
-                f.write(tp_bytes)
-            logging.info(f"Saved captcha images to {bg_path} and {tp_path}")
-        except Exception as e:
-            logging.warning(f"Failed to save captcha images: {e}")
+        def _download_image_with_retry(url: str, label: str, max_retries: int = 3, timeout_s: float = 5.0):
+            for attempt in range(1, max_retries + 1):
+                started = _time.time()
+                try:
+                    resp = self.requests.get(url, headers=c_captcha_headers, timeout=timeout_s)
+                    resp.raise_for_status()
+                    elapsed = _time.time() - started
+                    if elapsed > timeout_s:
+                        logging.warning(
+                            f"{label} image download exceeded {timeout_s}s on attempt {attempt} "
+                            f"({elapsed:.3f}s), retrying"
+                        )
+                        continue
+                    return resp.content
+                except requests.exceptions.Timeout:
+                    logging.warning(
+                        f"{label} image download timeout (> {timeout_s}s), retry {attempt}/{max_retries}"
+                    )
+                except Exception as e:
+                    logging.warning(
+                        f"{label} image download failed on retry {attempt}/{max_retries}: {e}"
+                    )
+            return None
+
+        bg_bytes = _download_image_with_retry(bg, "Background")
+        tp_bytes = _download_image_with_retry(tp, "Puzzle")
+        if not bg_bytes or not tp_bytes:
+            logging.error("Slide captcha image download failed after retries")
+            return None
+
+        # 可选调试：默认不落盘，避免频繁 IO 和日志噪音
+        if _should_save_captcha_debug_images():
+            try:
+                ts = int(_time.time() * 1000)
+                debug_dir = os.path.join(os.path.dirname(__file__), "..", "captcha_debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                bg_path = os.path.join(debug_dir, f"bg_{ts}.jpg")
+                tp_path = os.path.join(debug_dir, f"tp_{ts}.png")
+                with open(bg_path, "wb") as f:
+                    f.write(bg_bytes)
+                with open(tp_path, "wb") as f:
+                    f.write(tp_bytes)
+                logging.debug(f"Saved captcha images to {bg_path} and {tp_path}")
+            except Exception as e:
+                logging.debug(f"Failed to save captcha images: {e}")
 
         bg_img = cv2.imdecode(np.frombuffer(bg_bytes, np.uint8), cv2.IMREAD_COLOR)
         tp_img = cut_slide(tp_bytes)

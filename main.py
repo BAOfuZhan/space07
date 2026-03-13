@@ -339,42 +339,125 @@ def strategic_first_attempt(
 
         first_seat = seat_list[0]
 
-        # 2. 等到“目标时间前若干秒”，预热滑块验证码，提前拿到多份 validate（如果启用了滑块）
-        ten_before = target_dt - datetime.timedelta(seconds=STRATEGY_SLIDER_LEAD_SECONDS)
-        while _beijing_now() < ten_before:
-            time.sleep(0.1)
-
         captcha1 = captcha2 = captcha3 = ""
+
+        # 验证码预热整体预算：最多占用 [T-slider_lead_seconds, T] 这段时间。
+        # 到达 target_dt 后立即停止预热，直接进入提交流程。
+        captcha_deadline = target_dt
+
+        def _remaining_captcha_seconds() -> float:
+            return (captcha_deadline - _beijing_now()).total_seconds()
+
+        # 2. 等到“目标时间前若干秒”，预热滑块验证码，提前拿到多份 validate（如果启用了滑块）
+        if ENABLE_SLIDER or ENABLE_TEXTCLICK:
+            ten_before = target_dt - datetime.timedelta(seconds=STRATEGY_SLIDER_LEAD_SECONDS)
+            while _beijing_now() < ten_before:
+                time.sleep(0.1)
+
         # 根据开关决定是否预热验证码
         if ENABLE_SLIDER:
-            # 滑块验证：预先获取三份 validate
-            captcha1 = s.resolve_captcha("slide")
-            if not captcha1:
-                logging.warning(
-                    "[strategic] First slider captcha failed or empty, retrying once more"
+            # 滑块验证：并发预取三份 validate，避免串行慢请求拖垮总时长
+            def _resolve_slide_captcha_parallel(slot_idx: int) -> str:
+                if _remaining_captcha_seconds() <= 0:
+                    logging.warning(
+                        f"[strategic] Slider captcha{slot_idx} skipped: preheat deadline reached"
+                    )
+                    return ""
+
+                worker = reserve(
+                    sleep_time=SLEEPTIME,
+                    max_attempt=MAX_ATTEMPT,
+                    enable_slider=ENABLE_SLIDER,
+                    enable_textclick=ENABLE_TEXTCLICK,
+                    reserve_next_day=RESERVE_NEXT_DAY,
                 )
-                captcha1 = s.resolve_captcha("slide")
+                worker.requests.cookies.update(s.requests.cookies)
+                worker.requests.headers.update(s.requests.headers)
+
+                captcha = worker.resolve_captcha("slide")
+                if not captcha:
+                    if _remaining_captcha_seconds() <= 0:
+                        logging.warning(
+                            f"[strategic] Slider captcha{slot_idx} retry skipped: preheat deadline reached"
+                        )
+                        return ""
+                    logging.warning(
+                        f"[strategic] Slider captcha{slot_idx} failed or empty, retrying once more"
+                    )
+                    captcha = worker.resolve_captcha("slide")
+                return captcha
+
+            captcha_results = {1: "", 2: "", 3: ""}
+            remaining = _remaining_captcha_seconds()
+            if remaining <= 0:
+                logging.warning("[strategic] Captcha preheat budget exhausted before slider starts, skip preheat")
+            else:
+                def _worker(slot_idx: int):
+                    try:
+                        captcha_results[slot_idx] = _resolve_slide_captcha_parallel(slot_idx) or ""
+                    except Exception as e:
+                        logging.warning(f"[strategic] Slider captcha{slot_idx} thread failed: {e}")
+                        captcha_results[slot_idx] = ""
+
+                deadline_mono = time.monotonic() + remaining
+
+                def _start_threads(slot_ids: list[int]):
+                    local_threads = []
+                    for idx in slot_ids:
+                        t = threading.Thread(
+                            target=_worker,
+                            args=(idx,),
+                            name=f"slide-captcha-{idx}",
+                            daemon=True,
+                        )
+                        local_threads.append((idx, t))
+                        t.start()
+                    return local_threads
+
+                def _join_threads_until_deadline(threads_to_join):
+                    for _, t in threads_to_join:
+                        timeout_left = deadline_mono - time.monotonic()
+                        if timeout_left <= 0:
+                            break
+                        t.join(timeout=timeout_left)
+
+                if remaining < 3:
+                    logging.warning(
+                        "[strategic] Remaining captcha preheat budget < 3s, preheat slot1/slot2 first"
+                    )
+                    first_two_threads = _start_threads([1, 2])
+                    _join_threads_until_deadline(first_two_threads)
+
+                    ready_count = sum(1 for i in [1, 2] if captcha_results[i])
+                    if ready_count >= 1:
+                        logging.warning(
+                            "[strategic] Budget < 3s and captcha1/2 already ready, skip captcha3 preheat"
+                        )
+                    else:
+                        timeout_left = deadline_mono - time.monotonic()
+                        if timeout_left > 0:
+                            logging.warning(
+                                "[strategic] Budget < 3s and captcha1/2 empty, try captcha3 as fallback"
+                            )
+                            third_threads = _start_threads([3])
+                            _join_threads_until_deadline(third_threads)
+                else:
+                    all_threads = _start_threads([1, 2, 3])
+                    _join_threads_until_deadline(all_threads)
+
+            captcha1 = captcha_results[1]
+            captcha2 = captcha_results[2]
+            captcha3 = captcha_results[3]
             logging.info(f"[strategic] Pre-resolved slider captcha1: {captcha1}")
-
-            captcha2 = s.resolve_captcha("slide")
-            if not captcha2:
-                logging.warning(
-                    "[strategic] Second slider captcha failed or empty, retrying once more"
-                )
-                captcha2 = s.resolve_captcha("slide")
             logging.info(f"[strategic] Pre-resolved slider captcha2: {captcha2}")
-
-            captcha3 = s.resolve_captcha("slide")
-            if not captcha3:
-                logging.warning(
-                    "[strategic] Third slider captcha failed or empty, retrying once more"
-                )
-                captcha3 = s.resolve_captcha("slide")
             logging.info(f"[strategic] Pre-resolved slider captcha3: {captcha3}")
         elif ENABLE_TEXTCLICK:
             # 选字验证：预先获取三份 validate（循环重试直到成功）
             def get_textclick_with_retry(name: str, max_retries: int = 10) -> str:
                 for i in range(max_retries):
+                    if _remaining_captcha_seconds() <= 0:
+                        logging.warning(f"[strategic] {name} textclick skipped: preheat deadline reached")
+                        return ""
                     captcha = s.resolve_captcha("textclick")
                     if captcha:
                         logging.info(f"[strategic] {name} textclick captcha resolved: {captcha}")
@@ -399,11 +482,14 @@ def strategic_first_attempt(
 
         # 连接预热：整个策略流程仅执行一次，避免多配置下重复 warm 请求
         if not warm_done:
-            warm_dt = target_dt - datetime.timedelta(seconds=5)
-            while _beijing_now() < warm_dt:
-                time.sleep(0.05)
-            s.warm_connection(_token_url)
-            warm_done = True
+            if _beijing_now() >= target_dt:
+                logging.info("[warm] Skip warm-up because target time reached, enter submit flow directly")
+            else:
+                warm_dt = target_dt - datetime.timedelta(seconds=5)
+                while _beijing_now() < warm_dt:
+                    time.sleep(0.05)
+                s.warm_connection(_token_url)
+                warm_done = True
         else:
             logging.info("[warm] Skip redundant warm-up for this config")
 
