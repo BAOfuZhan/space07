@@ -277,6 +277,7 @@ def strategic_first_attempt(
             raise Exception("USERNAMES and PASSWORDS count mismatch")
 
     current_dayofweek = get_current_dayofweek(action)
+    warm_done = False
 
     for index, user in enumerate(users):
         # 已经成功的配置不再参与策略尝试
@@ -396,11 +397,15 @@ def strategic_first_attempt(
             fidEnc=fid_enc or "",
         )
 
-        # 连接预热：在 T-4s 发一次真实的 token GET 请求（结果丢弃），建好 TCP+TLS 连接，后续复用省 ~100-200ms
-        warm_dt = target_dt - datetime.timedelta(seconds=4)
-        while _beijing_now() < warm_dt:
-            time.sleep(0.05)
-        s.warm_connection(_token_url)
+        # 连接预热：整个策略流程仅执行一次，避免多配置下重复 warm 请求
+        if not warm_done:
+            warm_dt = target_dt - datetime.timedelta(seconds=5)
+            while _beijing_now() < warm_dt:
+                time.sleep(0.05)
+            s.warm_connection(_token_url)
+            warm_done = True
+        else:
+            logging.info("[warm] Skip redundant warm-up for this config")
 
         if SUBMIT_MODE == "burst":
             # ── 定时连发（极限型）──

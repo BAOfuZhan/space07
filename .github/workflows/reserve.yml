@@ -21,7 +21,7 @@ jobs:
           echo "users_matrix=$users" >> "$GITHUB_OUTPUT"
 
   reserve-dispatch:
-    name: reserve-dispatch (${{ matrix.user.remark || matrix.user.username || '用户' }})
+    name: reserve-dispatch (${{ matrix.user.nickname || matrix.user.nickName || matrix.user.name || matrix.user.remark || matrix.user.username || '用户' }})
     if: ${{ github.event_name == 'repository_dispatch' }}
     needs: prepare-dispatch
     runs-on: ubuntu-latest
@@ -63,7 +63,7 @@ jobs:
       - name: Extract key logs
         if: ${{ always() }}
         env:
-          USER_NAME: ${{ matrix.user.remark || matrix.user.username || 'user' }}
+          USER_NAME: ${{ matrix.user.nickname || matrix.user.nickName || matrix.user.name || matrix.user.remark || matrix.user.username || 'user' }}
         run: |
           user_name="${USER_NAME}"
           {
