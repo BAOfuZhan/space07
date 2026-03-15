@@ -187,11 +187,42 @@ class reserve:
         except Exception as e:
             logging.warning(f"[warm] Failed to warm connection: {e}")
 
-    def get_login_status(self):
-        self.requests.headers = self.login_headers
-        self.requests.get(url=self.login_page, verify=False)
+    def _request_with_retry(
+        self,
+        method,
+        url,
+        *,
+        request_name="request",
+        attempts=3,
+        retry_delay=0.2,
+        **kwargs,
+    ):
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = (3.05, 5)
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self.requests.request(method=method, url=url, **kwargs)
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                if attempt >= attempts:
+                    logging.error(f"{request_name} failed after {attempts} attempt(s): {exc}")
+                    raise
+                logging.warning(f"{request_name} failed on attempt {attempt}/{attempts}: {exc}; retrying in {retry_delay:.2f}s")
+                time.sleep(retry_delay)
+        raise last_exc
 
-    def login(self, username, password):
+    def _get(self, url, **kwargs):
+        return self._request_with_retry("GET", url, **kwargs)
+
+    def _post(self, url, **kwargs):
+        return self._request_with_retry("POST", url, **kwargs)
+
+    def get_login_status(self, attempts=3):
+        self.requests.headers = self.login_headers
+        self._get(url=self.login_page, verify=False, request_name="login page bootstrap", attempts=attempts)
+
+    def login(self, username, password, attempts=3):
         username = AES_Encrypt(username)
         password = AES_Encrypt(password)
         parm = {
@@ -201,16 +232,31 @@ class reserve:
             "refer": "http%3A%2F%2Foffice.chaoxing.com%2Ffront%2Fthird%2Fapps%2Fseat%2Fcode%3Fid%3D4219%26seatNum%3D380",
             "t": True,
         }
-        jsons = self.requests.post(url=self.login_url, params=parm, verify=False)
-        obj = jsons.json()
+        response = self._post(url=self.login_url, params=parm, verify=False, request_name="Chaoxing login submit", attempts=attempts)
+        try:
+            obj = response.json()
+        except ValueError as e:
+            logging.error(f"Failed to parse Chaoxing login response: {e}")
+            return (False, "invalid login response")
         if obj["status"]:
             logging.info(f"User {username} login successfully")
             return (True, "")
         else:
-            logging.info(
-                f"User {username} login failed. Please check you password and username! "
-            )
+            logging.info(f"User {username} login failed: {obj['msg2']}")
             return (False, obj["msg2"])
+
+    def bootstrap_login(self, username, password, attempts=3):
+        try:
+            self.get_login_status(attempts=attempts)
+            success, msg = self.login(username, password, attempts=attempts)
+        except requests.exceptions.RequestException as e:
+            logging.warning(f"Failed to bootstrap login session for {username}: {e}")
+            return False
+        if not success:
+            logging.warning(f"Login bootstrap rejected for {username}: {msg}")
+            return False
+        self.requests.headers.update({"Host": "office.chaoxing.com"})
+        return True
 
     # extra: get roomid
     def roomid(self, encode):

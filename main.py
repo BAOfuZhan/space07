@@ -331,9 +331,9 @@ def strategic_first_attempt(
             enable_textclick=ENABLE_TEXTCLICK,
             reserve_day_offset=RESERVE_DAY_OFFSET,
         )
-        s.get_login_status()
-        s.login(username, password)
-        s.requests.headers.update({"Host": "office.chaoxing.com"})
+        if not s.bootstrap_login(username, password):
+            logging.warning(f"Skip first attempt for {username}: login bootstrap failed")
+            continue
         # 将已登录的 session 存入 sessions[]，fallback 直接复用，无需重新登录
         if sessions is not None and sessions[index] is None:
             sessions[index] = s
@@ -757,9 +757,9 @@ def login_and_reserve(
                 enable_textclick=ENABLE_TEXTCLICK,
                 reserve_day_offset=RESERVE_DAY_OFFSET,
             )
-            s.get_login_status()
-            s.login(username, password)
-            s.requests.headers.update({"Host": "office.chaoxing.com"})
+            if not s.bootstrap_login(username, password):
+                logging.warning(f"Skip current attempt for {username}: login bootstrap failed")
+                continue
             if sessions[index] is None:
                 sessions[index] = s
         else:
@@ -770,9 +770,9 @@ def login_and_reserve(
                 enable_textclick=ENABLE_TEXTCLICK,
                 reserve_day_offset=RESERVE_DAY_OFFSET,
             )
-            s.get_login_status()
-            s.login(username, password)
-            s.requests.headers.update({"Host": "office.chaoxing.com"})
+            if not s.bootstrap_login(username, password):
+                logging.warning(f"Skip current attempt for {username}: login bootstrap failed")
+                continue
 
         # 在 GitHub Actions 中传入 ENDTIME，确保内部循环在超过结束时间后及时停止
         suc = s.submit(
@@ -961,9 +961,9 @@ def debug(users, action=False):
             enable_textclick=ENABLE_TEXTCLICK,
             reserve_day_offset=RESERVE_DAY_OFFSET,
         )
-        s.get_login_status()
-        s.login(username, password)
-        s.requests.headers.update({"Host": "office.chaoxing.com"})
+        if not s.bootstrap_login(username, password):
+            logging.warning(f"Skip debug reserve attempt for {username}: login bootstrap failed")
+            continue
         suc = s.submit(times, roomid, seatid, action, None, fidEnc=fid_enc, seat_page_id=seat_page_id)
         if suc:
             return
@@ -979,9 +979,9 @@ def get_roomid(args1, args2):
         enable_textclick=ENABLE_TEXTCLICK,
         reserve_day_offset=RESERVE_DAY_OFFSET,
     )
-    s.get_login_status()
-    s.login(username=username, password=password)
-    s.requests.headers.update({"Host": "office.chaoxing.com"})
+    if not s.bootstrap_login(username=username, password=password):
+        logging.error("Failed to bootstrap login session, abort room query")
+        return
     encode = input("请输入deptldEnc：")
     s.roomid(encode)
 
