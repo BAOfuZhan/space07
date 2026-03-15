@@ -67,7 +67,7 @@ ENABLE_SLIDER = False  # 是否有滑块验证（调试阶段先关闭）
 ENABLE_TEXTCLICK = False  # 是否有选字验证码（需要图灵云打码平台）
 MAX_ATTEMPT = 1
 # 预约日期偏移：0=当天，1=明天，2=后天
-RESERVE_DAY_OFFSET = 1
+RESERVE_DAY_OFFSET = 2
 
 
 # 是否在每一轮主循环中都重新登录。
