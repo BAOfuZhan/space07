@@ -67,7 +67,7 @@ class reserve:
         max_attempt=50,
         enable_slider=False,
         enable_textclick=False,
-        reserve_next_day=False,
+        reserve_day_offset=1,
     ):
         self.login_page = (
             "https://passport2.chaoxing.com/mlogin?loginType=1&newversion=true&fid="
@@ -119,7 +119,7 @@ class reserve:
         self.max_attempt = max_attempt
         self.enable_slider = enable_slider
         self.enable_textclick = enable_textclick
-        self.reserve_next_day = reserve_next_day
+        self.reserve_day_offset = reserve_day_offset
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
     # login and page token
@@ -622,7 +622,7 @@ class reserve:
         """
         # 计算与 get_submit 相同的预约日期，保证页面 token 与提交使用的是同一天
         beijing_today = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)).date()
-        delta_day = 1 if self.reserve_next_day else 0
+        delta_day = self.reserve_day_offset
         day = beijing_today + datetime.timedelta(days=delta_day)
         
         # 每次调用 submit 时重置 max_attempt，确保每个配置都有充足的重试机会
@@ -696,7 +696,7 @@ class reserve:
         # 统一以北京时间（UTC+8）的"今天"为基准，不再区分本地 / GitHub Actions，
         # 是否预约明天仅由 self.reserve_next_day 决定。
         beijing_today = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)).date()
-        delta_day = 1 if self.reserve_next_day else 0
+        delta_day = self.reserve_day_offset
         day = beijing_today + datetime.timedelta(days=delta_day)
         # 与前端保持一致：提交 roomId/startTime/endTime/day/seatNum/captcha/wyToken，再计算 enc
         # 按前端逻辑：wyToken 仅在开启网易风控时由 wyRiskObj.getToken() 生成；
@@ -741,7 +741,7 @@ class reserve:
         不再直接作为提交字段发送给后端。
         """
         beijing_today = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)).date()
-        delta_day = 1 if self.reserve_next_day else 0
+        delta_day = self.reserve_day_offset
         day = beijing_today + datetime.timedelta(days=delta_day)
         parm = {
             "roomId": roomid,

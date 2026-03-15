@@ -61,12 +61,13 @@ def _format_seat_number(seat_num: int) -> str:
 
 
 SLEEPTIME = 0.1  # 每次抢座的间隔（减少到0.05秒以加快速度）
-ENDTIME = "20:00:40"  # 根据学校的预约座位时间+1min即可
+ENDTIME = "19:00:40"  # 根据学校的预约座位时间+1min即可
 
 ENABLE_SLIDER = False  # 是否有滑块验证（调试阶段先关闭）
 ENABLE_TEXTCLICK = False  # 是否有选字验证码（需要图灵云打码平台）
 MAX_ATTEMPT = 1
-RESERVE_NEXT_DAY = True  # 预约明天而不是今天的
+# 预约日期偏移：0=当天，1=明天，2=后天
+RESERVE_DAY_OFFSET = 2
 
 
 # 是否在每一轮主循环中都重新登录。
@@ -328,7 +329,7 @@ def strategic_first_attempt(
             max_attempt=MAX_ATTEMPT,
             enable_slider=ENABLE_SLIDER,
             enable_textclick=ENABLE_TEXTCLICK,
-            reserve_next_day=RESERVE_NEXT_DAY,
+            reserve_day_offset=RESERVE_DAY_OFFSET,
         )
         s.get_login_status()
         s.login(username, password)
@@ -369,7 +370,7 @@ def strategic_first_attempt(
                     max_attempt=MAX_ATTEMPT,
                     enable_slider=ENABLE_SLIDER,
                     enable_textclick=ENABLE_TEXTCLICK,
-                    reserve_next_day=RESERVE_NEXT_DAY,
+                    reserve_day_offset=RESERVE_DAY_OFFSET,
                 )
                 worker.requests.cookies.update(s.requests.cookies)
                 worker.requests.headers.update(s.requests.headers)
@@ -721,7 +722,7 @@ def login_and_reserve(
     users, usernames, passwords, action, success_list=None, sessions=None
 ):
     logging.info(
-        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nENABLE_TEXTCLICK: {ENABLE_TEXTCLICK}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}"
+        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nENABLE_TEXTCLICK: {ENABLE_TEXTCLICK}\nRESERVE_DAY_OFFSET: {RESERVE_DAY_OFFSET}"
     )
 
     usernames_list, passwords_list = None, None
@@ -743,83 +744,47 @@ def login_and_reserve(
 
     current_dayofweek = get_current_dayofweek(action)
     for index, user in enumerate(users):
-        username = user["username"]
-        password = user["password"]
-        times = user["times"]
-        roomid = user["roomid"]
-        seatid = user["seatid"]
-        seat_page_id = user.get("seatPageId")
-        fid_enc = user.get("fidEnc")
-        daysofweek = user["daysofweek"]
+        username = usernames_list[index] if usernames_list else user["username"]
+        password = passwords_list[index] if passwords_list else user["password"]
+        seat_list = user["seat_list"]
+        action = user.get("action", False)
 
-        # 如果今天不在该配置的 daysofweek 中，直接跳过
-        if current_dayofweek not in daysofweek:
-            logging.info("Today not set to reserve")
-            continue
-
-        if action:
-            if len(usernames_list) == 1:
-                # 只有一个账号，所有配置都用这个账号
-                username = usernames_list[0]
-                password = passwords_list[0]
-            elif index < len(usernames_list):
-                username = usernames_list[index]
-                password = passwords_list[index]
-            else:
-                logging.error(
-                    "Index out of range for USERNAMES/PASSWORDS, skipping this config."
-                )
-                continue
-
-        if not success_list[index]:
-            logging.info(
-                f"----------- {username} -- {times} -- {seatid} try -----------"
+        if sessions is not None:
+            s = reserve(
+                sleep_time=SLEEPTIME,
+                max_attempt=MAX_ATTEMPT,
+                enable_slider=ENABLE_SLIDER,
+                enable_textclick=ENABLE_TEXTCLICK,
+                reserve_day_offset=RESERVE_DAY_OFFSET,
             )
-
-            # 根据 RELOGIN_EVERY_LOOP 决定是否复用会话
-            s = None
-            if sessions is not None:
-                s = sessions[index]
-                if s is None:
-                    # 该账号第一次使用：创建会话并登录
-                    s = reserve(
-                        sleep_time=SLEEPTIME,
-                        max_attempt=MAX_ATTEMPT,
-                        enable_slider=ENABLE_SLIDER,
-                        enable_textclick=ENABLE_TEXTCLICK,
-                        reserve_next_day=RESERVE_NEXT_DAY,
-                    )
-                    s.get_login_status()
-                    s.login(username, password)
-                    s.requests.headers.update({"Host": "office.chaoxing.com"})
-                    sessions[index] = s
-                else:
-                    # 复用已有会话，确保 Host 头正确
-                    s.requests.headers.update({"Host": "office.chaoxing.com"})
-            else:
-                # 维持原有行为：每一轮循环都重新创建会话并登录
-                s = reserve(
-                    sleep_time=SLEEPTIME,
-                    max_attempt=MAX_ATTEMPT,
-                    enable_slider=ENABLE_SLIDER,
-                    enable_textclick=ENABLE_TEXTCLICK,
-                    reserve_next_day=RESERVE_NEXT_DAY,
-                )
-                s.get_login_status()
-                s.login(username, password)
-                s.requests.headers.update({"Host": "office.chaoxing.com"})
-
-            # 在 GitHub Actions 中传入 ENDTIME，确保内部循环在超过结束时间后及时停止
-            suc = s.submit(
-                times,
-                roomid,
-                seatid,
-                action,
-                ENDTIME if action else None,
-                fidEnc=fid_enc,
-                seat_page_id=seat_page_id,
+            s.get_login_status()
+            s.login(username, password)
+            s.requests.headers.update({"Host": "office.chaoxing.com"})
+            if sessions[index] is None:
+                sessions[index] = s
+        else:
+            s = reserve(
+                sleep_time=SLEEPTIME,
+                max_attempt=MAX_ATTEMPT,
+                enable_slider=ENABLE_SLIDER,
+                enable_textclick=ENABLE_TEXTCLICK,
+                reserve_day_offset=RESERVE_DAY_OFFSET,
             )
-            success_list[index] = suc
+            s.get_login_status()
+            s.login(username, password)
+            s.requests.headers.update({"Host": "office.chaoxing.com"})
+
+        # 在 GitHub Actions 中传入 ENDTIME，确保内部循环在超过结束时间后及时停止
+        suc = s.submit(
+            times,
+            roomid,
+            seatid,
+            action,
+            ENDTIME if action else None,
+            fidEnc=fid_enc,
+            seat_page_id=seat_page_id,
+        )
+        success_list[index] = suc
     return success_list
 
 
@@ -938,7 +903,7 @@ def main(users, action=False):
 
 def debug(users, action=False):
     logging.info(
-        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nENABLE_TEXTCLICK: {ENABLE_TEXTCLICK}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}"
+        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nENABLE_TEXTCLICK: {ENABLE_TEXTCLICK}\nRESERVE_DAY_OFFSET: {RESERVE_DAY_OFFSET}"
     )
     suc = False
     logging.info(f" Debug Mode start! , action {'on' if action else 'off'}")
@@ -994,7 +959,7 @@ def debug(users, action=False):
             max_attempt=MAX_ATTEMPT,
             enable_slider=ENABLE_SLIDER,
             enable_textclick=ENABLE_TEXTCLICK,
-            reserve_next_day=RESERVE_NEXT_DAY,
+            reserve_day_offset=RESERVE_DAY_OFFSET,
         )
         s.get_login_status()
         s.login(username, password)
@@ -1012,7 +977,7 @@ def get_roomid(args1, args2):
         max_attempt=MAX_ATTEMPT,
         enable_slider=ENABLE_SLIDER,
         enable_textclick=ENABLE_TEXTCLICK,
-        reserve_next_day=RESERVE_NEXT_DAY,
+        reserve_day_offset=RESERVE_DAY_OFFSET,
     )
     s.get_login_status()
     s.login(username=username, password=password)
